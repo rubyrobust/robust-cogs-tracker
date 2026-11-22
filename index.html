@@ -97,7 +97,7 @@ body aside.border-r{ border-color:#e6ded2 !important; background-color:#f3efe8; 
 </head><body>
 <div id="root"><div style="padding:3rem;text-align:center;font-family:Roboto,sans-serif;color:#8a8e91"><div style="font-family:'Roboto Condensed';text-transform:uppercase;font-weight:700;font-size:1.4rem;color:#0a0c10">COGS Tracker</div><div style="margin-top:.4rem">Starting…</div></div></div>
 <div id="fatal"><h2>The app couldn't start</h2><p id="fatal-msg" style="color:#4a5c66"></p><p style="color:#8a8e91;font-size:.9rem">Send this line to Ruby and reload.</p></div>
-<div id="verbadge">v11 · batch approvals</div>
+<div id="verbadge">v12 · users</div>
 <script>
 window.__mounted=false;
 function fatal(m){try{document.getElementById('fatal-msg').textContent=m;document.getElementById('fatal').style.display='block';var r=document.getElementById('root');if(r)r.innerHTML='';}catch(e){}}
@@ -422,6 +422,8 @@ if(typeof supabase==="undefined")throw new Error("Database library failed to ini
 /* ============================================================
    CONFIG  — Supabase project (anon/publishable key is safe in frontend)
    ============================================================ */
+const AUTH_LINK_TYPE = (location.hash.match(/[#&]type=([a-z]+)/) || [])[1] || '';
+const AUTH_LINK_ERROR = /error_code=otp_expired|error=access_denied/.test(location.hash) ? 'That link has expired or was already used. Enter your email below and choose "Forgot password?" to get a new one.' : '';
 const SUPABASE_URL = 'https://wopexedhtrblncgadekj.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_e8glE2ByZVuVlZEqBNb4Aw_PjdTDWwf';
 const {
@@ -475,6 +477,7 @@ function App() {
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
   const [booting, setBooting] = useState(true);
+  const [recovering, setRecovering] = useState(AUTH_LINK_TYPE === 'recovery' || AUTH_LINK_TYPE === 'invite');
   useEffect(() => {
     sb.auth.getSession().then(({
       data
@@ -484,7 +487,11 @@ function App() {
     });
     const {
       data: sub
-    } = sb.auth.onAuthStateChange((_e, s) => setSession(s));
+    } = sb.auth.onAuthStateChange((_e, s) => {
+      if (_e === 'PASSWORD_RECOVERY') setRecovering(true);
+      if (_e === 'SIGNED_OUT') setRecovering(false);
+      setSession(s);
+    });
     return () => sub.subscription.unsubscribe();
   }, []);
   useEffect(() => {
@@ -508,6 +515,14 @@ function App() {
     label: "Loading…"
   });
   if (!session) return /*#__PURE__*/React.createElement(Login, null);
+  if (recovering) return RC(SetPasswordScreen, {
+    onDone: () => {
+      try {
+        history.replaceState(null, '', location.pathname);
+      } catch (e) {}
+      setRecovering(false);
+    }
+  });
   if (!profile) return /*#__PURE__*/React.createElement(Splash, {
     label: "Loading your profile…"
   });
@@ -538,6 +553,26 @@ function Login() {
   const [pw, setPw] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [info, setInfo] = useState('');
+  const forgot = async () => {
+    setErr('');
+    setInfo('');
+    if (!email.trim()) {
+      setErr('Type your email address first, then choose "Forgot password?".');
+      return;
+    }
+    try {
+      const {
+        error
+      } = await sb.auth.resetPasswordForEmail(email.trim(), {
+        redirectTo: location.origin
+      });
+      if (error) throw error;
+      setInfo('If that address has an account, a reset link is on its way. Check your spam folder too. The link works once and lasts about an hour.');
+    } catch (e) {
+      setErr(/rate limit|too many/i.test(e.message || '') ? 'Too many emails sent just now. Please try again in an hour, or ask an approver to set a password for you.' : 'Could not send the email. Try again in a moment.');
+    }
+  };
   const submit = async () => {
     setErr('');
     setBusy(true);
@@ -584,11 +619,16 @@ function Login() {
     autoComplete: "current-password"
   }), err && /*#__PURE__*/React.createElement("div", {
     className: "text-error text-sm mb-4"
-  }, err), /*#__PURE__*/React.createElement("button", {
+  }, err), (info || AUTH_LINK_ERROR) && RC("div", {
+    className: "text-sm mb-4 " + (info ? "text-success" : "text-error")
+  }, info || AUTH_LINK_ERROR), /*#__PURE__*/React.createElement("button", {
     onClick: submit,
     disabled: busy || !email || !pw,
     className: "w-full bg-ink text-bone disp font-semibold tracking-wide py-3 disabled:opacity-40"
-  }, busy ? 'Signing in…' : 'Sign in')));
+  }, busy ? 'Signing in…' : 'Sign in'), RC("button", {
+    onClick: forgot,
+    className: "disp text-sm text-metal underline mt-4"
+  }, "Forgot password?")));
 }
 
 /* ============================================================
@@ -855,7 +895,8 @@ function Tracker({
   profile
 }) {
   const canApprove = !!profile.can_approve;
-  const [view, setView] = useState('dashboard'); // dashboard | costs | insights | approvals
+  const [view, setView] = useState('dashboard'); // dashboard | costs | insights | approvals | users
+  const [showPw, setShowPw] = useState(false);
   const [stores, setStores] = useState([]);
   const [storeId, setStoreId] = useState(null);
   const [skus, setSkus] = useState([]);
@@ -1026,13 +1067,19 @@ function Tracker({
   }, "Approvals", totalPending > 0 && /*#__PURE__*/React.createElement(Badge, {
     tone: "warn",
     className: "ml-2"
-  }, totalPending))), /*#__PURE__*/React.createElement("div", {
+  }, totalPending)), canApprove && /*#__PURE__*/React.createElement(TopTab, {
+    active: view === 'users',
+    onClick: () => setView('users')
+  }, "Users")), /*#__PURE__*/React.createElement("div", {
     className: "flex items-center gap-3 pr-4 text-sm"
   }, /*#__PURE__*/React.createElement("span", {
     className: "text-metal"
   }, profile.full_name, canApprove && /*#__PURE__*/React.createElement("span", {
     className: "text-sand"
   }, " · approver")), /*#__PURE__*/React.createElement("button", {
+    className: "disp text-xs tracking-wide border border-metal/40 px-2 py-1 hover:bg-white/10",
+    onClick: () => setShowPw(true)
+  }, "Password"), /*#__PURE__*/React.createElement("button", {
     className: "disp text-xs tracking-wide border border-metal/40 px-2 py-1 hover:bg-white/10",
     onClick: () => sb.auth.signOut()
   }, "Sign out"))), err && /*#__PURE__*/React.createElement("div", {
@@ -1064,6 +1111,11 @@ function Tracker({
     session: session,
     profile: profile,
     onChanged: () => loadStore(storeId)
+  }), view === 'users' && canApprove && RC(Users, {
+    session: session,
+    profile: profile
+  }), showPw && RC(ChangePasswordModal, {
+    onClose: () => setShowPw(false)
   }), view === 'insights' && /*#__PURE__*/React.createElement(Insights, {
     skus: skus,
     configsBySku: configsBySku,
@@ -1188,6 +1240,495 @@ function Tracker({
     onSaved: () => loadStore(storeId)
   }))));
 }
+/* ============================================================
+   USER ADMIN (v11)
+   Approvers add, edit, block and reset passwords for tracker users.
+   Everything goes through the `admin-users` Supabase Edge Function,
+   which checks on the server that the caller is an approver.
+   ============================================================ */
+const RC = React.createElement;
+const USER_ROLES = [['coo', 'COO'], ['ops_manager', 'Ops manager'], ['product_manager', 'Product manager'], ['viewer', 'Viewer']];
+const roleLabel = r => (USER_ROLES.find(x => x[0] === r) || [r, r || '—'])[1];
+async function adminCall(action, payload = {}) {
+  const {
+    data,
+    error
+  } = await sb.functions.invoke('admin-users', {
+    body: {
+      action,
+      ...payload
+    }
+  });
+  if (error) {
+    let msg = 'Could not reach the user service. Try again in a moment.';
+    try {
+      const status = error.context && error.context.status;
+      if (status === 404) msg = 'The user service is not set up yet (the admin-users function is missing in Supabase).';else if (error.context && error.context.json) {
+        const j = await error.context.json();
+        if (j && j.error) msg = j.error;
+      }
+    } catch (e) {}
+    throw new Error(msg);
+  }
+  if (data && data.error) throw new Error(data.error);
+  return data;
+}
+function genTempPassword() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+  const a = new Uint32Array(14);
+  crypto.getRandomValues(a);
+  return Array.from(a, n => chars[n % chars.length]).join('') + '7';
+}
+function fmtDate(iso) {
+  if (!iso) return 'Never';
+  try {
+    return new Date(iso).toLocaleDateString('en-GB', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric'
+    });
+  } catch (e) {
+    return '—';
+  }
+}
+
+/* Shows a password once, with a copy button. */
+function PasswordReveal({
+  title,
+  password,
+  onClose
+}) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(password);
+      setCopied(true);
+    } catch (e) {}
+  };
+  return RC("div", {
+    className: "border border-line bg-white p-4 mb-5"
+  }, RC("div", {
+    className: "disp font-semibold mb-1"
+  }, title), RC("p", {
+    className: "text-metal text-sm mb-3"
+  }, "Send this to them privately (for example on Slack). It is shown only once and cannot be looked up later."), RC("div", {
+    className: "flex items-center gap-3"
+  }, RC("code", {
+    className: "num bg-bone border border-line px-3 py-2 select-all"
+  }, password), RC("button", {
+    onClick: copy,
+    className: "disp text-xs border border-line px-3 py-2 hover:bg-bone"
+  }, copied ? 'Copied' : 'Copy'), RC("button", {
+    onClick: onClose,
+    className: "disp text-xs text-metal underline ml-auto"
+  }, "Done")));
+}
+function AddUserForm({
+  onDone,
+  onCancel,
+  onReveal
+}) {
+  const [email, setEmail] = useState('');
+  const [name, setName] = useState('');
+  const [role, setRole] = useState('product_manager');
+  const [approver, setApprover] = useState(false);
+  const [method, setMethod] = useState('invite');
+  const [pw, setPw] = useState(genTempPassword());
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const submit = async () => {
+    setErr('');
+    setBusy(true);
+    try {
+      await adminCall('add', {
+        email,
+        full_name: name,
+        role,
+        can_approve: approver,
+        method,
+        password: method === 'password' ? pw : undefined
+      });
+      onDone(method === 'password' ? {
+        title: 'Temporary password for ' + name.trim(),
+        password: pw
+      } : null, method === 'invite' ? 'Invite sent to ' + email.trim() + '. They will get an email to set their password.' : name.trim() + ' has been added.');
+    } catch (e) {
+      setErr(e.message);
+    }
+    setBusy(false);
+  };
+  const lbl = "block text-xs disp text-metal mb-1";
+  const inp = "w-full border border-line bg-white px-3 py-2 mb-3";
+  return RC("div", {
+    className: "border border-line bg-white p-4 mb-5"
+  }, RC("div", {
+    className: "disp font-semibold mb-3"
+  }, "Add a user"), RC("div", {
+    className: "grid grid-cols-1 md:grid-cols-2 gap-x-4"
+  }, RC("div", null, RC("label", {
+    className: lbl
+  }, "Email"), RC("input", {
+    className: inp,
+    value: email,
+    onChange: e => setEmail(e.target.value),
+    placeholder: "name@robustgoods.com"
+  })), RC("div", null, RC("label", {
+    className: lbl
+  }, "Full name"), RC("input", {
+    className: inp,
+    value: name,
+    onChange: e => setName(e.target.value)
+  })), RC("div", null, RC("label", {
+    className: lbl
+  }, "Role"), RC("select", {
+    className: inp,
+    value: role,
+    onChange: e => setRole(e.target.value)
+  }, USER_ROLES.map(r => RC("option", {
+    key: r[0],
+    value: r[0]
+  }, r[1])))), RC("div", null, RC("label", {
+    className: lbl
+  }, "How should they get access?"), RC("select", {
+    className: inp,
+    value: method,
+    onChange: e => setMethod(e.target.value)
+  }, RC("option", {
+    value: "invite"
+  }, "Send an invite email"), RC("option", {
+    value: "password"
+  }, "Create with a temporary password (no email)")))), method === 'password' && RC("div", {
+    className: "mb-3"
+  }, RC("label", {
+    className: lbl
+  }, "Temporary password"), RC("div", {
+    className: "flex items-center gap-3"
+  }, RC("code", {
+    className: "num bg-bone border border-line px-3 py-2"
+  }, pw), RC("button", {
+    onClick: () => setPw(genTempPassword()),
+    className: "disp text-xs border border-line px-3 py-2 hover:bg-bone"
+  }, "New one"))), RC("label", {
+    className: "flex items-center gap-2 text-sm mb-4"
+  }, RC("input", {
+    type: "checkbox",
+    checked: approver,
+    onChange: e => setApprover(e.target.checked)
+  }), "Can approve cost changes (only for people who should sign off costs)"), err && RC("div", {
+    className: "text-error text-sm mb-3"
+  }, err), RC("div", {
+    className: "flex gap-3"
+  }, RC("button", {
+    onClick: submit,
+    disabled: busy || !email.trim() || !name.trim(),
+    className: "bg-ink text-bone disp font-semibold tracking-wide px-5 py-2 disabled:opacity-40"
+  }, busy ? 'Adding…' : 'Add user'), RC("button", {
+    onClick: onCancel,
+    className: "disp text-sm text-metal underline"
+  }, "Cancel")));
+}
+function Users({
+  session,
+  profile
+}) {
+  const [users, setUsers] = useState(null);
+  const [err, setErr] = useState('');
+  const [notice, setNotice] = useState('');
+  const [busyId, setBusyId] = useState(null);
+  const [showAdd, setShowAdd] = useState(false);
+  const [reveal, setReveal] = useState(null);
+  const me = session.user.id;
+  const load = useCallback(async () => {
+    setErr('');
+    try {
+      const r = await adminCall('list');
+      setUsers(r.users || []);
+    } catch (e) {
+      setErr(e.message);
+      setUsers([]);
+    }
+  }, []);
+  useEffect(() => {
+    load();
+  }, []);
+  const act = async (u, action, payload, okMsg) => {
+    setErr('');
+    setNotice('');
+    setBusyId(u.id);
+    try {
+      await adminCall(action, {
+        id: u.id,
+        ...payload
+      });
+      if (okMsg) setNotice(okMsg);
+      await load();
+    } catch (e) {
+      setErr(e.message);
+    }
+    setBusyId(null);
+  };
+  const toggleApprover = u => {
+    const next = !u.can_approve;
+    const q = next ? 'Give ' + (u.full_name || u.email) + ' approval rights? They will be able to approve costs and manage users.' : 'Remove approval rights from ' + (u.full_name || u.email) + '?';
+    if (window.confirm(q)) act(u, 'update', {
+      can_approve: next
+    }, (u.full_name || u.email) + (next ? ' can now approve.' : ' can no longer approve.'));
+  };
+  const toggleBlock = u => {
+    const blocking = !u.blocked;
+    const q = blocking ? 'Block ' + (u.full_name || u.email) + '? They will not be able to sign in. Their history is kept.' : 'Let ' + (u.full_name || u.email) + ' sign in again?';
+    if (window.confirm(q)) act(u, blocking ? 'block' : 'unblock', {}, (u.full_name || u.email) + (blocking ? ' is blocked.' : ' can sign in again.'));
+  };
+  const resetPw = async u => {
+    if (!window.confirm('Set a new temporary password for ' + (u.full_name || u.email) + '? Their current password will stop working.')) return;
+    const pw = genTempPassword();
+    setErr('');
+    setNotice('');
+    setBusyId(u.id);
+    try {
+      await adminCall('set_password', {
+        id: u.id,
+        password: pw
+      });
+      setReveal({
+        title: 'New temporary password for ' + (u.full_name || u.email),
+        password: pw
+      });
+    } catch (e) {
+      setErr(e.message);
+    }
+    setBusyId(null);
+  };
+  const th = "text-left text-xs disp text-metal font-semibold px-3 py-2";
+  const td = "px-3 py-2 align-middle";
+  const sel = "border border-line bg-white px-2 py-1 text-sm";
+  const btn = "disp text-xs border border-line px-2 py-1 hover:bg-bone disabled:opacity-40";
+  return RC("div", {
+    className: "flex-1 overflow-auto p-6 max-w-5xl mx-auto w-full"
+  }, RC("div", {
+    className: "flex items-end justify-between mb-1"
+  }, RC("h1", {
+    className: "disp text-2xl font-bold tracking-tight"
+  }, "Users"), !showAdd && RC("button", {
+    onClick: () => {
+      setShowAdd(true);
+      setNotice('');
+    },
+    className: "bg-ink text-bone disp font-semibold tracking-wide px-4 py-2 text-sm"
+  }, "Add user")), RC("p", {
+    className: "text-metal text-sm mb-5"
+  }, "Who can sign in to the tracker, what they are, and who can approve costs. Only approvers see this page."), reveal && RC(PasswordReveal, {
+    title: reveal.title,
+    password: reveal.password,
+    onClose: () => setReveal(null)
+  }), showAdd && RC(AddUserForm, {
+    onCancel: () => setShowAdd(false),
+    onReveal: setReveal,
+    onDone: (rev, msg) => {
+      setShowAdd(false);
+      setNotice(msg);
+      if (rev) setReveal(rev);
+      load();
+    }
+  }), notice && RC("div", {
+    className: "text-success text-sm mb-4"
+  }, notice), err && RC("div", {
+    className: "text-error text-sm mb-4"
+  }, err, " ", RC("button", {
+    className: "underline disp",
+    onClick: load
+  }, "Reload")), !users && RC("div", {
+    className: "text-metal disp py-10 text-center"
+  }, "Loading…"), users && users.length > 0 && RC("div", {
+    className: "border border-line bg-white overflow-x-auto"
+  }, RC("table", {
+    className: "w-full text-sm"
+  }, RC("thead", {
+    className: "border-b border-line"
+  }, RC("tr", null, RC("th", {
+    className: th
+  }, "Name"), RC("th", {
+    className: th
+  }, "Role"), RC("th", {
+    className: th
+  }, "Approver"), RC("th", {
+    className: th
+  }, "Status"), RC("th", {
+    className: th
+  }, "Last sign-in"), RC("th", {
+    className: th
+  }, ""))), RC("tbody", {
+    className: "divide-y divide-line"
+  }, users.map(u => {
+    const self = u.id === me;
+    const busy = busyId === u.id;
+    return RC("tr", {
+      key: u.id,
+      className: u.blocked ? 'opacity-60' : ''
+    }, RC("td", {
+      className: td
+    }, RC("div", {
+      className: "font-semibold"
+    }, u.full_name || '—', self && RC("span", {
+      className: "text-metal font-normal"
+    }, " (you)")), RC("div", {
+      className: "text-metal text-xs"
+    }, u.email)), RC("td", {
+      className: td
+    }, RC("select", {
+      className: sel,
+      value: u.role || '',
+      disabled: busy,
+      onChange: e => act(u, 'update', {
+        role: e.target.value
+      }, (u.full_name || u.email) + ' is now ' + roleLabel(e.target.value) + '.')
+    }, !u.role && RC("option", {
+      value: ""
+    }, "No profile"), USER_ROLES.map(r => RC("option", {
+      key: r[0],
+      value: r[0]
+    }, r[1])))), RC("td", {
+      className: td
+    }, RC("input", {
+      type: "checkbox",
+      checked: u.can_approve,
+      disabled: busy || self && u.can_approve,
+      title: self ? 'You cannot change your own approval rights' : '',
+      onChange: () => toggleApprover(u)
+    })), RC("td", {
+      className: td
+    }, u.blocked ? RC(Badge, {
+      tone: "error"
+    }, "Blocked") : !u.confirmed ? RC(Badge, {
+      tone: "warn"
+    }, "Invite pending") : !u.has_profile ? RC(Badge, {
+      tone: "warn"
+    }, "No profile") : RC(Badge, {
+      tone: "success"
+    }, "Active")), RC("td", {
+      className: td + " text-metal"
+    }, fmtDate(u.last_sign_in_at)), RC("td", {
+      className: td + " text-right whitespace-nowrap"
+    }, RC("button", {
+      className: btn + " mr-2",
+      disabled: busy,
+      onClick: () => resetPw(u)
+    }, "Set password"), !self && RC("button", {
+      className: btn,
+      disabled: busy,
+      onClick: () => toggleBlock(u)
+    }, u.blocked ? 'Unblock' : 'Block')));
+  })))), RC("p", {
+    className: "text-metal text-xs mt-4"
+  }, "Blocking keeps a person's history, so their past cost changes stay attributed to them. Nobody is ever deleted."));
+}
+
+/* ============================================================
+   PASSWORDS: change your own, and set one from an invite/reset link
+   ============================================================ */
+function PasswordForm({
+  submitLabel,
+  onDone
+}) {
+  const [pw, setPw] = useState('');
+  const [pw2, setPw2] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const submit = async () => {
+    setErr('');
+    if (pw.length < 8) {
+      setErr('Use at least 8 characters.');
+      return;
+    }
+    if (pw !== pw2) {
+      setErr('The two passwords do not match.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const {
+        error
+      } = await sb.auth.updateUser({
+        password: pw
+      });
+      if (error) throw error;
+      onDone();
+    } catch (e) {
+      setErr(e.message || 'Could not save the password.');
+    }
+    setBusy(false);
+  };
+  const lbl = "block text-xs disp text-metal mb-1";
+  const inp = "w-full border border-line bg-white px-3 py-2 mb-4";
+  return RC("div", null, RC("label", {
+    className: lbl
+  }, "New password"), RC("input", {
+    className: inp,
+    type: "password",
+    value: pw,
+    autoComplete: "new-password",
+    onChange: e => setPw(e.target.value)
+  }), RC("label", {
+    className: lbl
+  }, "Type it again"), RC("input", {
+    className: inp,
+    type: "password",
+    value: pw2,
+    autoComplete: "new-password",
+    onChange: e => setPw2(e.target.value),
+    onKeyDown: e => e.key === 'Enter' && submit()
+  }), err && RC("div", {
+    className: "text-error text-sm mb-4"
+  }, err), RC("button", {
+    onClick: submit,
+    disabled: busy || !pw || !pw2,
+    className: "w-full bg-ink text-bone disp font-semibold tracking-wide py-3 disabled:opacity-40"
+  }, busy ? 'Saving…' : submitLabel));
+}
+function ChangePasswordModal({
+  onClose
+}) {
+  const [done, setDone] = useState(false);
+  return RC("div", {
+    className: "fixed inset-0 bg-ink/50 flex items-center justify-center z-50 px-4",
+    onClick: onClose
+  }, RC("div", {
+    className: "bg-bone w-full max-w-sm p-6 border border-line",
+    onClick: e => e.stopPropagation()
+  }, RC("div", {
+    className: "disp text-xl font-bold mb-4"
+  }, "Change your password"), done ? RC("div", null, RC("p", {
+    className: "text-success text-sm mb-4"
+  }, "Password changed."), RC("button", {
+    onClick: onClose,
+    className: "w-full border border-line disp py-2"
+  }, "Close")) : RC("div", null, RC(PasswordForm, {
+    submitLabel: "Save password",
+    onDone: () => setDone(true)
+  }), RC("button", {
+    onClick: onClose,
+    className: "disp text-sm text-metal underline mt-3"
+  }, "Cancel"))));
+}
+function SetPasswordScreen({
+  onDone
+}) {
+  return RC("div", {
+    className: "h-full flex items-center justify-center bg-bone px-4"
+  }, RC("div", {
+    className: "w-full max-w-sm"
+  }, RC("div", {
+    className: "bg-ink text-bone inline-block px-3 py-2 disp font-bold text-lg mb-6"
+  }, "COGS Tracker"), RC("h1", {
+    className: "disp text-3xl font-bold tracking-tight mb-1"
+  }, "Choose your password"), RC("p", {
+    className: "text-metal text-sm mb-6"
+  }, "You will use it to sign in from now on."), RC(PasswordForm, {
+    submitLabel: "Save and continue",
+    onDone: onDone
+  })));
+}
+
 function TopTab({
   active,
   onClick,
