@@ -97,7 +97,7 @@ body aside.border-r{ border-color:#e6ded2 !important; background-color:#f3efe8; 
 </head><body>
 <div id="root"><div style="padding:3rem;text-align:center;font-family:Roboto,sans-serif;color:#8a8e91"><div style="font-family:'Roboto Condensed';text-transform:uppercase;font-weight:700;font-size:1.4rem;color:#0a0c10">COGS Tracker</div><div style="margin-top:.4rem">Starting…</div></div></div>
 <div id="fatal"><h2>The app couldn't start</h2><p id="fatal-msg" style="color:#4a5c66"></p><p style="color:#8a8e91;font-size:.9rem">Send this line to Ruby and reload.</p></div>
-<div id="verbadge">v12 · users</div>
+<div id="verbadge">v13 · agreed prices</div>
 <script>
 window.__mounted=false;
 function fatal(m){try{document.getElementById('fatal-msg').textContent=m;document.getElementById('fatal').style.display='block';var r=document.getElementById('root');if(r)r.innerHTML='';}catch(e){}}
@@ -895,7 +895,7 @@ function Tracker({
   profile
 }) {
   const canApprove = !!profile.can_approve;
-  const [view, setView] = useState('dashboard'); // dashboard | costs | insights | approvals | users
+  const [view, setView] = useState('dashboard'); // dashboard | costs | insights | landed | simulator | agreed | approvals | users
   const [showPw, setShowPw] = useState(false);
   const [stores, setStores] = useState([]);
   const [storeId, setStoreId] = useState(null);
@@ -913,6 +913,35 @@ function Tracker({
   const [suppliers, setSuppliers] = useState([]);
   const [selSkuId, setSelSkuId] = useState(null);
   const [selConfigId, setSelConfigId] = useState(null);
+  // v13: agreed prices + checker (Concept Global)
+  const [agreed, setAgreed] = useState([]);
+  const [agreedLoading, setAgreedLoading] = useState(true);
+  const [agreedErr, setAgreedErr] = useState('');
+  const [agreedFilter, setAgreedFilter] = useState('all');
+  const loadAgreed = useCallback(async () => {
+    try {
+      const rows = await fetchAllRows('v_agreed_prices_current', '*');
+      setAgreed(rows);
+      setAgreedErr('');
+    } catch (e) {
+      setAgreedErr('Could not load agreed prices. If this is the first time, the v13 SQL has not been run yet.');
+    }
+    setAgreedLoading(false);
+  }, []);
+  useEffect(() => { loadAgreed(); }, [storeId, pending]);
+  const agreedDiffer = agreed.filter(r => r.check_status === 'mismatch').length;
+  const agreedUnchecked = agreed.filter(r => r.check_status === 'no_bom' || r.check_status === 'no_config' || r.check_status === 'not_in_tracker').length;
+  const isCG = ((stores.find(s => s.id === storeId) || {}).name) === 'Concept Global';
+  const hasSku = code => skus.some(s => s.sku_code === code);
+  const openRecipe = (code, sup) => {
+    const s = skus.find(x => x.sku_code === code);
+    if (!s) return;
+    const cfgs = configs.filter(c => c.sku_id === s.id);
+    const c = cfgs.find(x => x.supplier_code === sup) || cfgs[0];
+    setSelSkuId(s.id);
+    setSelConfigId(c ? c.id : null);
+    setView('costs');
+  };
   const loadStores = useCallback(async () => {
     const {
       data
@@ -1061,7 +1090,13 @@ function Tracker({
   }, "Landed margin"), /*#__PURE__*/React.createElement(TopTab, {
     active: view === 'simulator',
     onClick: () => setView('simulator')
-  }, "Margin simulator"), canApprove && /*#__PURE__*/React.createElement(TopTab, {
+  }, "Margin simulator"), /*#__PURE__*/React.createElement(TopTab, {
+    active: view === 'agreed',
+    onClick: () => setView('agreed')
+  }, "Agreed prices", agreedDiffer > 0 && /*#__PURE__*/React.createElement(Badge, {
+    tone: "error",
+    className: "ml-2"
+  }, agreedDiffer)), canApprove && /*#__PURE__*/React.createElement(TopTab, {
     active: view === 'approvals',
     onClick: () => setView('approvals')
   }, "Approvals", totalPending > 0 && /*#__PURE__*/React.createElement(Badge, {
@@ -1089,7 +1124,12 @@ function Tracker({
     onClick: () => loadStore(storeId)
   }, "Reload")), waking && /*#__PURE__*/React.createElement("div", {
     className: "bg-warn/20 text-ink text-sm px-4 py-2"
-  }, "Waking the database… one moment."), view === 'dashboard' && /*#__PURE__*/React.createElement(Dashboard, {
+  }, "Waking the database… one moment."), view === 'dashboard' && isCG && agreedDiffer > 0 && RC('div', {
+    className: "bg-error/10 border-b border-error/30 text-sm px-4 py-2 flex items-center justify-between"
+  }, RC('span', null, RC('b', { className: "disp" }, agreedDiffer + (agreedDiffer === 1 ? ' recipe cost differs' : ' recipe costs differ')), ' from the agreed prices' + (agreedUnchecked ? ' · ' + agreedUnchecked + " can't be checked yet" : '') + '.'), RC('button', {
+    className: "disp text-xs underline",
+    onClick: () => { setAgreedFilter('mismatch'); setView('agreed'); }
+  }, "Review")), view === 'dashboard' && /*#__PURE__*/React.createElement(Dashboard, {
     stores: stores,
     storeId: storeId,
     setStoreId: setStoreId,
@@ -1121,7 +1161,17 @@ function Tracker({
     configsBySku: configsBySku,
     cogsByConfig: cogsByConfig,
     storeName: (stores.find(s => s.id === storeId) || {}).name
-  }), view === 'landed' && /*#__PURE__*/React.createElement(LandedMargin, null), view === 'simulator' && /*#__PURE__*/React.createElement(MarginSimulator, null), view === 'costs' && /*#__PURE__*/React.createElement("div", {
+  }), view === 'landed' && /*#__PURE__*/React.createElement(LandedMargin, null), view === 'simulator' && /*#__PURE__*/React.createElement(MarginSimulator, null), view === 'agreed' && RC(AgreedPrices, {
+    rows: agreed,
+    loading: agreedLoading,
+    err: agreedErr,
+    canApprove: canApprove,
+    onChanged: loadAgreed,
+    filter: agreedFilter,
+    setFilter: setAgreedFilter,
+    hasSku: hasSku,
+    onOpenRecipe: openRecipe
+  }), view === 'costs' && /*#__PURE__*/React.createElement("div", {
     className: "flex-1 flex min-h-0"
   }, /*#__PURE__*/React.createElement("aside", {
     className: "w-80 shrink-0 border-r border-line bg-bone flex flex-col"
@@ -4772,6 +4822,229 @@ function Row({
     className: "num " + (bold ? 'font-semibold' : '')
   }, value));
 }
+/* ============================================================
+   AGREED PRICES  (v13)
+   One dated, agreed unit cost (USD) per Concept Global SKU, checked
+   against the recipe total in Recipes & costs for the same supplier.
+   Data: agreed_prices table, v_agreed_prices_current view,
+   set_agreed_price() function (approvers only).
+   ============================================================ */
+const AGREED_STATUS = {
+  mismatch: { label: 'Differs', tone: 'error' },
+  match: { label: 'Matches', tone: 'success' },
+  no_bom: { label: 'Tracker has no cost', tone: 'warn' },
+  no_config: { label: 'No recipe for supplier', tone: 'warn' },
+  not_in_tracker: { label: 'SKU not in tracker', tone: 'muted' }
+};
+const AGREED_UNCHECKED = ['no_bom', 'no_config', 'not_in_tracker'];
+const AGREED_SUPPLIERS = ['KOBE', 'ECOMMOPS', 'YINWEI', 'YONGYI', 'RHINOKEY'];
+const todayLocalISO = () => {
+  const d = new Date();
+  const p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+};
+const fmtAgreedDate = s => {
+  if (!s) return '—';
+  const d = new Date(String(s).slice(0, 10) + 'T00:00:00');
+  return isNaN(d) ? s : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+};
+const USD4 = n => '$' + (Number(n) || 0).toFixed(2);
+
+function AgreedPrices({ rows, loading, err, canApprove, onChanged, filter, setFilter, hasSku, onOpenRecipe }) {
+  const [search, setSearch] = useState('');
+  const [open, setOpen] = useState(null);
+  const [history, setHistory] = useState({});
+  const [form, setForm] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+
+  const counts = useMemo(() => {
+    const c = { all: rows.length, match: 0, mismatch: 0, no_bom: 0, no_config: 0, not_in_tracker: 0 };
+    rows.forEach(r => { c[r.check_status] = (c[r.check_status] || 0) + 1; });
+    c.unchecked = c.no_bom + c.no_config + c.not_in_tracker;
+    return c;
+  }, [rows]);
+
+  const shown = useMemo(() => {
+    let l = rows;
+    if (filter === 'unchecked') l = l.filter(r => AGREED_UNCHECKED.includes(r.check_status));
+    else if (filter !== 'all') l = l.filter(r => r.check_status === filter);
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      l = l.filter(r => (r.sku_code || '').toLowerCase().includes(q) || (r.product_title || '').toLowerCase().includes(q) || (r.variant_title || '').toLowerCase().includes(q) || (r.supplier_code || '').toLowerCase().includes(q));
+    }
+    const rank = { mismatch: 0, no_bom: 1, no_config: 2, not_in_tracker: 3, match: 4 };
+    return [...l].sort((a, b) => (rank[a.check_status] - rank[b.check_status]) || (Math.abs(Number(b.diff_usd) || 0) - Math.abs(Number(a.diff_usd) || 0)) || a.sku_code.localeCompare(b.sku_code));
+  }, [rows, filter, search]);
+
+  const toggle = async sku => {
+    if (open === sku) { setOpen(null); return; }
+    setOpen(sku);
+    if (!history[sku]) {
+      try {
+        const r = await withRetry(() => sb.from('agreed_prices').select('*').eq('sku_code', sku).order('effective_from', { ascending: false }).order('created_at', { ascending: false }));
+        setHistory(h => ({ ...h, [sku]: (r && r.data) || [] }));
+      } catch (e) {
+        setHistory(h => ({ ...h, [sku]: [] }));
+      }
+    }
+  };
+
+  const startForm = r => setForm(r
+    ? { sku_code: r.sku_code, cost: String(Number(r.agreed_cost_usd)), supplier: r.supplier_code || '', effective: todayLocalISO(), note: '', locked: true }
+    : { sku_code: '', cost: '', supplier: 'KOBE', effective: todayLocalISO(), note: '', locked: false });
+
+  const submit = async () => {
+    const sku = form.sku_code.trim();
+    const cost = parseFloat(form.cost);
+    if (!sku) { setMsg({ tone: 'err', text: 'Enter a SKU code.' }); return; }
+    if (isNaN(cost) || cost < 0) { setMsg({ tone: 'err', text: 'Enter the agreed cost in USD.' }); return; }
+    if (!form.effective) { setMsg({ tone: 'err', text: 'Choose the date this cost is agreed from.' }); return; }
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await sb.rpc('set_agreed_price', { p_sku_code: sku, p_cost: cost, p_supplier: form.supplier || null, p_effective: form.effective, p_note: form.note || null });
+      if (r.error) throw r.error;
+      setMsg({ tone: 'ok', text: 'Saved ' + sku + ' at ' + USD4(cost) + ', agreed from ' + fmtAgreedDate(form.effective) + '.' });
+      setHistory(h => { const n = { ...h }; delete n[sku]; return n; });
+      setOpen(null);
+      setForm(null);
+      await onChanged();
+    } catch (e) {
+      setMsg({ tone: 'err', text: e.message || 'Could not save.' });
+    }
+    setBusy(false);
+  };
+
+  const inputCls = "border border-line bg-white px-2 py-1.5 text-sm w-full";
+  const labelCls = "text-[10px] disp tracking-widest text-metal mb-1";
+  const chip = (key, label, n) => RC('button', {
+    key: key,
+    onClick: () => setFilter(key),
+    className: "disp text-xs px-3 py-1.5 border " + (filter === key ? "bg-ink text-bone border-ink" : "bg-white border-line hover:bg-imgbg")
+  }, label + ' (' + n + ')');
+
+  const csvCols = [
+    { label: 'sku_code', get: r => r.sku_code },
+    { label: 'product', get: r => r.product_title },
+    { label: 'variant', get: r => r.variant_title },
+    { label: 'supplier', get: r => r.supplier_code },
+    { label: 'agreed_cost_usd', get: r => Number(r.agreed_cost_usd).toFixed(2) },
+    { label: 'agreed_from', get: r => r.effective_from },
+    { label: 'tracker_cost_usd', get: r => r.bom_usd == null ? '' : Number(r.bom_usd).toFixed(2) },
+    { label: 'difference_usd', get: r => r.check_status === 'mismatch' || r.check_status === 'match' ? Number(r.diff_usd).toFixed(2) : '' },
+    { label: 'difference_pct', get: r => r.check_status === 'mismatch' ? r.diff_pct : '' },
+    { label: 'check', get: r => (AGREED_STATUS[r.check_status] || {}).label || r.check_status },
+    { label: 'all_tracker_costs', get: r => r.all_boms }
+  ];
+
+  return RC('div', { className: "flex-1 overflow-auto bg-bone" },
+    RC('div', { className: "max-w-6xl mx-auto px-6 py-8 w-full" },
+      RC('div', { className: "flex items-end justify-between mb-6" },
+        RC('div', null,
+          RC('div', { className: "text-[10px] disp font-bold tracking-widest text-metal mb-1" }, "CONCEPT GLOBAL"),
+          RC('h1', { className: "disp text-4xl font-bold tracking-tight leading-none" }, "Agreed prices"),
+          RC('div', { className: "text-xs text-metal mt-2 max-w-xl" }, "One agreed unit cost per SKU, in USD, dated. Each is checked against the recipe total in Recipes & costs for the same supplier.")),
+        RC('div', { className: "flex gap-2 items-center" },
+          RC(ExportButton, {
+            label: "Agreed prices CSV",
+            title: "Download the list with the tracker comparison",
+            run: () => { downloadCSV('agreed-prices-{date}.csv', csvCols, shown); return shown.length; }
+          }),
+          canApprove && RC('button', {
+            onClick: () => startForm(null),
+            className: "disp text-xs bg-ink text-bone px-3 py-1.5 hover:opacity-80"
+          }, "+ Add / change price"))),
+      err && RC('div', { className: "bg-error/10 text-error text-sm px-4 py-2 mb-4" }, err),
+      RC('div', { className: "grid grid-cols-2 md:grid-cols-4 gap-4 mb-6" },
+        RC(Tile, { label: "Agreed SKUs", value: counts.all, sub: "current agreed cost", bg: "#1f2937" }),
+        RC(Tile, { label: "Match tracker", value: counts.match, sub: "recipe equals agreed", bg: "#648953" }),
+        RC(Tile, { label: "Differ from tracker", value: counts.mismatch, sub: counts.mismatch ? "audit these first" : "nothing to fix", bg: counts.mismatch ? '#aa1a1a' : '#648953' }),
+        RC(Tile, { label: "Can't check yet", value: counts.unchecked, sub: "no recipe or SKU missing", bg: counts.unchecked ? '#ffb84d' : '#648953' })),
+      msg && RC('div', { className: "text-sm px-4 py-2 mb-4 " + (msg.tone === 'err' ? "bg-error/10 text-error" : "bg-success/15 text-ink") }, msg.text),
+      form && RC('div', { className: "bg-white border border-ink p-4 mb-6" },
+        RC('div', { className: "disp font-bold mb-3" }, form.locked ? "Change agreed price — " + form.sku_code : "Add or change an agreed price"),
+        RC('div', { className: "grid grid-cols-2 md:grid-cols-5 gap-3" },
+          RC('div', null, RC('div', { className: labelCls }, "SKU CODE"),
+            RC('input', { className: inputCls, value: form.sku_code, disabled: form.locked, placeholder: "CG-SL20-BLK-M", onChange: e => setForm({ ...form, sku_code: e.target.value }) })),
+          RC('div', null, RC('div', { className: labelCls }, "AGREED COST (USD)"),
+            RC('input', { className: inputCls + " num", value: form.cost, inputMode: "decimal", placeholder: "5.00", onChange: e => setForm({ ...form, cost: e.target.value }) })),
+          RC('div', null, RC('div', { className: labelCls }, "SUPPLIER"),
+            RC('input', { className: inputCls, value: form.supplier, list: "agreed-suppliers", onChange: e => setForm({ ...form, supplier: e.target.value }) }),
+            RC('datalist', { id: "agreed-suppliers" }, AGREED_SUPPLIERS.map(s => RC('option', { key: s, value: s })))),
+          RC('div', null, RC('div', { className: labelCls }, "AGREED FROM"),
+            RC('input', { type: "date", className: inputCls, value: form.effective, onChange: e => setForm({ ...form, effective: e.target.value }) })),
+          RC('div', null, RC('div', { className: labelCls }, "NOTE (OPTIONAL)"),
+            RC('input', { className: inputCls, value: form.note, placeholder: "e.g. new quote Nov 2026", onChange: e => setForm({ ...form, note: e.target.value }) }))),
+        RC('div', { className: "flex items-center gap-3 mt-3" },
+          RC('button', { onClick: submit, disabled: busy, className: "disp text-xs bg-ink text-bone px-4 py-2 disabled:opacity-40" }, busy ? "Saving…" : "Save"),
+          RC('button', { onClick: () => { setForm(null); setMsg(null); }, className: "disp text-xs border border-line px-4 py-2 hover:bg-imgbg" }, "Cancel"),
+          RC('span', { className: "text-xs text-metal" }, "The previous price is kept in the history and closed the day before this date."))),
+      RC('div', { className: "flex flex-wrap items-center gap-2 mb-3" },
+        chip('all', 'All', counts.all),
+        chip('mismatch', 'Differ', counts.mismatch),
+        chip('match', 'Match', counts.match),
+        chip('unchecked', "Can't check", counts.unchecked),
+        RC('input', { className: "border border-line bg-white px-3 py-1.5 text-sm ml-auto w-64", placeholder: "Search SKU, product, supplier", value: search, onChange: e => setSearch(e.target.value) })),
+      loading && rows.length === 0 && RC('div', { className: "text-metal disp py-10 text-center" }, "Loading…"),
+      !loading && rows.length === 0 && !err && RC('div', { className: "border border-dashed border-line bg-white px-6 py-8 text-center text-metal" },
+        RC('div', { className: "disp font-semibold mb-1" }, "No agreed prices yet"),
+        RC('div', { className: "text-sm" }, canApprove ? "Use “Add / change price” to enter the first one." : "An approver needs to add the first one.")),
+      shown.length > 0 && RC('table', { className: "w-full text-sm border border-line bg-white" },
+        RC('thead', { className: "bg-imgbg disp text-[11px] text-metal" },
+          RC('tr', null,
+            RC('th', { className: "text-left px-3 py-2" }, "SKU"),
+            RC('th', { className: "text-left px-3 py-2" }, "Supplier"),
+            RC('th', { className: "text-right px-3 py-2" }, "Agreed (USD)"),
+            RC('th', { className: "text-left px-3 py-2" }, "Agreed from"),
+            RC('th', { className: "text-right px-3 py-2" }, "Tracker (USD)"),
+            RC('th', { className: "text-right px-3 py-2" }, "Difference"),
+            RC('th', { className: "text-left px-3 py-2" }, "Check"))),
+        RC('tbody', null, shown.map(r => {
+          const st = AGREED_STATUS[r.check_status] || { label: r.check_status, tone: 'muted' };
+          const comparable = r.check_status === 'mismatch' || r.check_status === 'match';
+          const d = Number(r.diff_usd) || 0;
+          const isOpen = open === r.sku_code;
+          const hist = history[r.sku_code];
+          return RC(React.Fragment, { key: r.sku_code },
+            RC('tr', { className: "border-t border-line cursor-pointer hover:bg-imgbg", onClick: () => toggle(r.sku_code) },
+              RC('td', { className: "px-3 py-2" },
+                RC('div', { className: "disp font-semibold" }, r.sku_code),
+                RC('div', { className: "text-xs text-metal" }, r.product_title ? (r.product_title + (r.variant_title ? ' · ' + r.variant_title : '')) : '—', r.sku_status === 'archived' && RC('span', { className: "ml-2" }, RC(Badge, null, "archived")))),
+              RC('td', { className: "px-3 py-2" }, r.supplier_code || RC('span', { className: "text-metal" }, "—")),
+              RC('td', { className: "px-3 py-2 num text-right" },
+                RC('div', { className: "font-semibold" }, USD4(r.agreed_cost_usd)),
+                r.previous_cost_usd != null && RC('div', { className: "text-[10px] text-metal" }, "was " + USD4(r.previous_cost_usd))),
+              RC('td', { className: "px-3 py-2 text-xs text-metal" }, fmtAgreedDate(r.effective_from)),
+              RC('td', { className: "px-3 py-2 num text-right" }, r.bom_usd != null && Number(r.bom_usd) > 0 ? USD4(r.bom_usd) : RC('span', { className: "text-metal" }, "—")),
+              RC('td', { className: "px-3 py-2 num text-right", style: comparable && r.check_status === 'mismatch' ? { color: '#aa1a1a' } : {} },
+                comparable ? (r.check_status === 'match' ? RC('span', { className: "text-metal" }, "—") : RC('div', null, RC('div', { className: "font-semibold" }, (d > 0 ? '+' : '−') + USD4(Math.abs(d))), RC('div', { className: "text-[10px]" }, (d > 0 ? '+' : '') + r.diff_pct + '%'))) : RC('span', { className: "text-metal" }, "—")),
+              RC('td', { className: "px-3 py-2" }, RC(Badge, { tone: st.tone }, st.label))),
+            isOpen && RC('tr', { className: "border-t border-line bg-bone" },
+              RC('td', { colSpan: 7, className: "px-4 py-3" },
+                RC('div', { className: "flex flex-wrap gap-8" },
+                  RC('div', { className: "min-w-[260px]" },
+                    RC('div', { className: labelCls }, "PRICE HISTORY"),
+                    !hist && RC('div', { className: "text-xs text-metal" }, "Loading…"),
+                    hist && hist.length === 0 && RC('div', { className: "text-xs text-metal" }, "No history found."),
+                    hist && hist.map(h => RC('div', { key: h.id, className: "text-xs py-0.5 flex gap-3" },
+                      RC('span', { className: "num font-semibold w-14" }, USD4(h.agreed_cost_usd)),
+                      RC('span', { className: "text-metal" }, fmtAgreedDate(h.effective_from) + ' → ' + (h.effective_to ? fmtAgreedDate(h.effective_to) : 'current')),
+                      RC('span', { className: "text-metal" }, [h.supplier_code, h.set_by_name, h.note].filter(Boolean).join(' · '))))),
+                  RC('div', null,
+                    RC('div', { className: labelCls }, "TRACKER RECIPE TOTALS"),
+                    RC('div', { className: "text-xs" }, r.all_boms || "No recipes for this SKU"),
+                    r.check_status === 'no_config' && RC('div', { className: "text-xs text-metal mt-1" }, "The agreed cost is from " + (r.supplier_code || 'no supplier') + ", but the tracker has no active recipe for that supplier."),
+                    r.check_status === 'not_in_tracker' && RC('div', { className: "text-xs text-metal mt-1" }, "No Concept Global SKU with this code. Add it, or check the code in the sheet.")),
+                  RC('div', { className: "flex flex-col gap-2 items-start" },
+                    canApprove && RC('button', { onClick: e => { e.stopPropagation(); startForm(r); const sc = e.currentTarget.closest('.overflow-auto'); if (sc) sc.scrollTo(0, 0); }, className: "disp text-xs border border-ink px-3 py-1.5 hover:bg-ink hover:text-bone" }, "Change price"),
+                    hasSku(r.sku_code) && RC('button', { onClick: e => { e.stopPropagation(); onOpenRecipe(r.sku_code, r.supplier_code); }, className: "disp text-xs border border-line bg-white px-3 py-1.5 hover:bg-imgbg" }, "Open recipe")))))
+          );
+        })))
+      ,
+      rows.length > 0 && shown.length === 0 && RC('div', { className: "text-metal disp py-8 text-center" }, "Nothing matches this filter.")));
+}
+
 ReactDOM.createRoot(document.getElementById('root')).render(/*#__PURE__*/React.createElement(App, null));
 window.__mounted = true;
 }catch(err){fatal((err&&err.message)?err.message:String(err));console.error(err);}
